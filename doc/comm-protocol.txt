@@ -1,0 +1,31 @@
+Telemetry mode:
+
+Rover                             Station
+
+TELEMETRY ----------------------->
+
+     <-------------------------- TEL-ACK (COMMAND = FALSE)
+
+               (repeat)
+
+=============================================================
+
+Command mode:
+
+Rover                             Station
+
+TELEMETRY ----------------------->
+
+     <--------------------------- TEL-ACK (COMMAND = TRUE)
+
+CMD-READY ----------------------->
+
+     <--------------------------- COMMAND (DONE = FALSE)
+
+CMD-ACK ------------------------->
+                   : (repeat until sequence complete)
+     <--------------------------- COMMAND (DONE = TRUE)
+
+CMD-ACK ------------------------->
+
+TELEMETRY -----------------------> (resume Telemetry mode)
