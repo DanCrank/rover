@@ -19,6 +19,9 @@
  *
  * Adafruit Ultimate GPS Featherwing
  * https://learn.adafruit.com/adafruit-ultimate-gps-featherwing
+ * Note: GPS firmware does not handle 2038 rollover, so if I'm
+ * still alive then, I'll need to update. See:
+ * https://learn.adafruit.com/adafruit-ultimate-gps-featherwing/f-a-q
  *
  * Adafruit Adalogger Featherwing
  * https://learn.adafruit.com/adafruit-adalogger-featherwing
@@ -59,44 +62,56 @@
  * TODO go through this whole thing and look for memory leaks
  ******************************************************************/
 
-#include <RH_RF69.h>
-#include <SPI.h>
 #include <string>
-#include <U8g2lib.h>
 #include <exception>
 #include <stdexcept>
 #include <vector>
+#include <SPI.h>
+#include <U8g2lib.h>
+#include <RH_RF69.h>
+#include <Adafruit_GPS.h>
 
 #define USB_DEBUG
 
-#define USE_ENCRYPTION
+#define USE_ENCRYPTION // we're not yet, but we will
 #ifdef USE_ENCRYPTION
 #define MAX_MESSAGE_SIZE 59
 #else
 #define MAX_MESSAGE_SIZE 250
 #endif
 
-extern "C" char *sbrk(int i); // used to measure free memory
+// global setup for GPS
+#define GPSSerial Serial1
+Adafruit_GPS GPS(&GPSSerial);
+
+// global fn for checking free memory
+extern "C" char *sbrk(int i);
 
 unsigned short free_ram () {
     char stack_dummy = 0;
     return &stack_dummy - sbrk(0);
 }
 
+// global for keeping signal strength of last received message
 int16_t last_signal_strength = 0;
 
-#define ACK_TIMEOUT 2000 // millis to wait for an ack msg
-#define MSG_DELAY 250 // millis to wait between Rx and Tx, to give the other side time to switch from Tx to Rx
-#define LISTEN_DELAY 100 // millis to wait between checks of the receive buffer when receiving
-#define TELEMETRY_INTERVAL 5000 // millis to wait after a successful telemetry exchange before sending another
+// global for timing telemetry packets
+uint32_t telemetry_timer = millis();
 
 // Singleton instance of the radio driver
 RH_RF69 rf69(11, 19);
 
+// Singleton instance of the display driver
 // https://github.com/olikraus/u8g2/wiki/u8g2setupcpp
 U8G2_SH1107_64X128_2_HW_I2C u8g2(/* rotation=*/ U8G2_R3, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 21, /* data=*/ 22);
 
-// message definitions
+// message timing parameters
+#define ACK_TIMEOUT 500 // millis to wait for an ack msg
+#define MSG_DELAY 100 // millis to wait between Rx and Tx, to give the other side time to switch from Tx to Rx
+#define LISTEN_DELAY 50 // millis to wait between checks of the receive buffer when receiving
+#define TELEMETRY_INTERVAL 5000 // millis to wait after a successful telemetry exchange before sending another
+
+// message IDs
 #define MESSAGE_TELEMETRY 0
 #define MESSAGE_TELEMETRY_ACK 1
 #define MESSAGE_COMMAND_READY 2
@@ -177,28 +192,40 @@ noexcept(false)
 // that means the max payload of a message is 60 bytes
 class RoverTimestamp {
 public:
+    unsigned char year; // two-digit year. sue me on 1/1/3000
+    unsigned char month;
+    unsigned char day;
+    unsigned char hour;
+    unsigned char minute;
+    unsigned char second;
+
     RoverTimestamp() {
-        // TODO set this from the RTC
-        hour = 0;
-        minute = 0;
-        second = 0;
+        // this will be UTC time
+        year = GPS.year;
+        month = GPS.month;
+        day = GPS.day;
+        hour = GPS.hour;
+        minute = GPS.minute;
+        second = GPS.seconds;
     }
 
     // deserializing constructor
     RoverTimestamp(std::vector<unsigned char> *v, size_t i)
     noexcept(false)
     {
-        hour = v->at(i);
-        minute = v->at(i+1);
-        second = v->at(i+2);
+        year = v->at(i);
+        month = v->at(i+1);
+        day = v->at(i+2);
+        hour = v->at(i+3);
+        minute = v->at(i+4);
+        second = v->at(i+5);
     }
-
-    unsigned char hour;
-    unsigned char minute;
-    unsigned char second;
 
     // serialize a timestamp onto the given vector
     void serialize(std::vector<unsigned char> *v) const {
+        v->push_back(year);
+        v->push_back(month);
+        v->push_back(day);
         v->push_back(hour);
         v->push_back(minute);
         v->push_back(second);
@@ -207,22 +234,31 @@ public:
 
 class RoverLocData {
 public:
-    RoverLocData() {
-        // TODO set these from the GPS
-        gps_lat = 0.0;
-        gps_long = 0.0;
-        gps_alt = 0.0;
-        gps_speed = 0.0;
-        gps_sats = 0;
-        mag_hdg = 0;
-    }
-
     float gps_lat;
     float gps_long;
     float gps_alt;
     float gps_speed;
     unsigned char gps_sats;
-    unsigned short mag_hdg;
+    unsigned short gps_hdg;
+
+    RoverLocData() {
+        // TODO set these from the GPS
+        if (GPS.fix) {
+            gps_lat = GPS.latitudeDegrees; // there's also a N/S/E/W attached to these?
+            gps_long = GPS.longitudeDegrees;
+            gps_alt = GPS.altitude; // this is in meters, THANKS COMMUNISTS
+            gps_speed = GPS.speed; // in knots for some reason, THANKS SAILORS TODO: convert
+            gps_sats = GPS.satellites;
+            gps_hdg = GPS.angle;
+        } else {
+            gps_lat = 0.0; // a big bucket of zeroes means the GPS doesn't have a fix yet
+            gps_long = 0.0;
+            gps_alt = 0.0;
+            gps_speed = 0.0;
+            gps_sats = 0;
+            gps_hdg = 0;
+        }
+    }
 
     // serialize loc data onto the given vector
     void serialize(std::vector<unsigned char> *v) {
@@ -231,13 +267,19 @@ public:
         serialize_float(&gps_alt, v);
         serialize_float(&gps_speed, v);
         v->push_back(gps_sats);
-        serialize_ushort(&mag_hdg, v);
+        serialize_ushort(&gps_hdg, v);
     }
 };
 
 // TODO - make a virtual base class to factor out timestamp and any other common stuff
 class TelemetryMessage {
 public:
+    RoverTimestamp *timestamp;
+    RoverLocData *location;
+    short signal_strength;
+    unsigned short free_memory;
+    std::string *status;
+
     TelemetryMessage() {
         timestamp = new RoverTimestamp();
         location = new RoverLocData();
@@ -252,14 +294,8 @@ public:
         delete status;
     }
 
-    RoverTimestamp *timestamp;
-    RoverLocData *location;
-    short signal_strength;
-    unsigned short free_memory;
-    std::string *status;
-
     void serialize(std::vector<unsigned char> *v) {
-        v->reserve(status->length() + 24);
+        v->reserve(status->length() + 27);
         v->push_back(MESSAGE_TELEMETRY);
         timestamp->serialize(v);
         location->serialize(v);
@@ -286,8 +322,8 @@ public:
             throw std::runtime_error(reinterpret_cast<const char *>(String(
                     "Wrong message type: expected MESSAGE_TELEMETRY_ACK, got ").concat(message_type(v->at(5)))));
         timestamp = new RoverTimestamp(v, 1);
-        ack = ((v->at(4)) > 0);
-        command_waiting = ((v->at(5)) > 0);
+        ack = ((v->at(7)) > 0);
+        command_waiting = ((v->at(8)) > 0);
     }
 
     ~TelemetryAck() {
@@ -342,8 +378,8 @@ class CommandMessage {
             throw std::runtime_error(reinterpret_cast<const char *>(String(
                     "Wrong message type: expected MESSAGE_COMMAND, got ").concat(message_type(v->at(5)))));
         timestamp = new RoverTimestamp(v, 1);
-        sequence_complete = ((v->at(4)) > 0);
-        command = deserialize_string(v, 5);
+        sequence_complete = ((v->at(7)) > 0);
+        command = deserialize_string(v, 8);
     }
 
     ~CommandMessage() {
@@ -417,39 +453,8 @@ void display(const String& str) {
     } while ( u8g2.nextPage() );
 }
 
-void setup() {
-#ifdef USB_DEBUG
-    // start USB port for debug messages
-    Serial.begin(57600);
-    debug("setup()");
-#endif
-
-    // initialize OLED display
-    u8g2.begin();
-    u8g2.setFont(u8g2_font_courB08_tf);
-
-    // initialize RFM69
-    display("initializing RFM69");
-    if (!rf69.init())
-        display("init failed");
-    if (!rf69.setFrequency(915))
-        display("setFrequency failed");
-    if (!rf69.setModemConfig(rf69.FSK_Rb9_6Fd19_2)) // FSK, Whitening, Rb = 9.6kbs,  Fd = 19.2kHz
-        display("setModemConfig failed");
-    rf69.setTxPower(17, true);
-    // TODO encryption key
-//    uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-//                      0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-//    rf69.setEncryptionKey(key);
-    uint version = rf69.deviceType();
-    display(String("RFM69: 0x" + String(version, HEX)));
-    delay(3000);
-}
-
 TelemetryMessage * collectTelemetry() {
     auto *msg = new TelemetryMessage();
-    msg->location->gps_alt = 69000.0;
-    msg->location->gps_sats = 42;
     // status
     msg->status->assign("READY FOR ADVENTURE");
     return msg;
@@ -457,7 +462,6 @@ TelemetryMessage * collectTelemetry() {
 
 void update_signal_strength() {
     last_signal_strength = rf69.lastRssi();
-    display("Signal: " + String(last_signal_strength));
 }
 
 // send a telemetry packet and wait for acknowledgement; retry if NAK'ed or no ACK
@@ -557,18 +561,58 @@ void sendTelemetry() {
     debug("sendTelemetry() complete.");
 }
 
-void loop() {
+void setup() {
+    // initialize OLED display
+    u8g2.begin();
+    u8g2.setFont(u8g2_font_courB08_tf);
+
 #ifdef USB_DEBUG
-    display("Waiting 30 seconds...");
-    delay(20000);
-    for (int i = 10; i >= 0; i--) {
-        display(String(i));
-        delay(1000);
-    }
-    //rf69.printRegisters();
+    display("Waiting for serial debug connection");
+    while (!Serial);
+    // start USB port for debug messages
+    Serial.begin(115200);
+    debug("setup()");
 #endif
-    for (int i = 0; i < 1000000; i++) {
+
+    // initialize RFM69
+    display("initializing RFM69");
+    if (!rf69.init())
+        display("init failed");
+    if (!rf69.setFrequency(915))
+        display("setFrequency failed");
+    if (!rf69.setModemConfig(rf69.FSK_Rb9_6Fd19_2)) // FSK, Whitening, Rb = 9.6kbs,  Fd = 19.2kHz
+        display("setModemConfig failed");
+    rf69.setTxPower(17, true);
+    // TODO encryption key
+//    uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+//                      0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+//    rf69.setEncryptionKey(key);
+    uint version = rf69.deviceType();
+    debug(String("RFM69 initialized: version 0x" + String(version, HEX)));
+
+    // initialize GPS / RTC
+    display("initializing GPS");
+    // copied from https://platformio.org/lib/show/20/Adafruit%20GPS%20Library
+    GPS.begin(9600);
+    GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+    GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
+    GPS.sendCommand(PGCMD_ANTENNA);
+    delay(1000);
+    GPSSerial.println(PMTK_Q_RELEASE); // not sure why we do this as there seems to be no way to read it back
+    debug("GPS initialized");
+}
+
+void loop() {
+    // more copypasta from https://platformio.org/lib/show/20/Adafruit%20GPS%20Library
+    // see also: https://learn.adafruit.com/adafruit-ultimate-gps-featherwing/arduino-library
+    // TODO ladyada recommends hanging this read() call on a 1ms interrupt
+    char c = GPS.read();
+    if (GPS.newNMEAreceived()) {
+        // parsing still has to happen in loop()
+        GPS.parse(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
+    }
+    if (millis() - telemetry_timer > TELEMETRY_INTERVAL) {
+        telemetry_timer = millis();
         sendTelemetry();
-        delay(TELEMETRY_INTERVAL);
     }
 }
