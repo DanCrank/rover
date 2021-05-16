@@ -178,15 +178,10 @@ noexcept(false)
 class RoverTimestamp {
 public:
     RoverTimestamp() {
+        // TODO set this from the RTC
         hour = 0;
         minute = 0;
         second = 0;
-    }
-
-    __attribute__((unused)) RoverTimestamp(unsigned char hour, unsigned char minute, unsigned char second) {
-        this->hour = hour;
-        this->minute = minute;
-        this->second = second;
     }
 
     // deserializing constructor
@@ -213,34 +208,13 @@ public:
 class RoverLocData {
 public:
     RoverLocData() {
+        // TODO set these from the GPS
         gps_lat = 0.0;
         gps_long = 0.0;
         gps_alt = 0.0;
         gps_speed = 0.0;
         gps_sats = 0;
         mag_hdg = 0;
-    }
-
-    __attribute__((unused)) RoverLocData(float gps_lat, float gps_long, float gps_alt,
-                 float gps_speed, unsigned char gps_sats, unsigned short mag_hdg) {
-        this->gps_lat = gps_lat;
-        this->gps_long = gps_long;
-        this->gps_alt = gps_alt;
-        this->gps_speed = gps_speed;
-        this->gps_sats = gps_sats;
-        this->mag_hdg = mag_hdg;
-    }
-
-    // deserializing constructor
-    RoverLocData(std::vector<unsigned char> *v, size_t i)
-    noexcept(false)
-    {
-        gps_lat = deserialize_float(v, i);
-        gps_long = deserialize_float(v, i+4);
-        gps_alt = deserialize_float(v, i+8);
-        gps_speed = deserialize_float(v, i+12);
-        gps_sats = v->at(i+16);
-        mag_hdg = deserialize_ushort(v, i+17);
     }
 
     float gps_lat;
@@ -262,9 +236,6 @@ public:
 };
 
 // TODO - make a virtual base class to factor out timestamp and any other common stuff
-// Deserializing code on this end is currently assuming that RadioHead is going to
-// strip off its four header bytes before returning the payload, and the first byte in
-// the buffer will be the message ID. This may not turn out to be true.
 class TelemetryMessage {
 public:
     TelemetryMessage() {
@@ -306,12 +277,6 @@ public:
         command_waiting = false;
     }
 
-    __attribute__((unused)) TelemetryAck(RoverTimestamp *timestamp, bool ack, bool command_waiting) {
-        this->timestamp = timestamp;
-        this->ack = ack;
-        this->command_waiting = command_waiting;
-    }
-
     // deserializing constructor
     explicit TelemetryAck(std::vector<unsigned char> *v)
     noexcept(false)
@@ -332,14 +297,6 @@ public:
     RoverTimestamp *timestamp;
     bool ack;
     bool command_waiting;
-
-    void serialize(std::vector<unsigned char> *v) const {
-        v->reserve(6);
-        v->push_back(MESSAGE_TELEMETRY_ACK);
-        timestamp->serialize(v);
-        v->push_back(ack > 0);
-        v->push_back(command_waiting > 0);
-    }
 };
 
 class CommandReady {
@@ -352,18 +309,6 @@ public:
     __attribute__((unused)) CommandReady(RoverTimestamp *timestamp, bool ready) {
         this->timestamp = timestamp;
         this->ready = ready;
-    }
-
-    // deserializing constructor
-    explicit CommandReady(std::vector<unsigned char> *v)
-    noexcept(false)
-    {
-        // check message type
-        if (v->at(0) != MESSAGE_COMMAND_READY)
-            throw std::runtime_error(reinterpret_cast<const char *>(String(
-                    "Wrong message type: expected MESSAGE_COMMAND_READY, got ").concat(message_type(v->at(5)))));
-        timestamp = new RoverTimestamp(v, 1);
-        ready = (v->at(4) > 0);
     }
 
     ~CommandReady() {
@@ -388,12 +333,6 @@ class CommandMessage {
         command = new std::string();
     }
 
-    __attribute__((unused)) CommandMessage(RoverTimestamp *timestamp, bool sequence_complete, std::string *command) {
-        this->timestamp = timestamp;
-        this->sequence_complete = sequence_complete;
-        this->command = command;
-    }
-
     // deserializing constructor
     __attribute__((unused)) explicit CommandMessage(std::vector<unsigned char> *v)
     noexcept(false)
@@ -415,14 +354,6 @@ class CommandMessage {
     RoverTimestamp *timestamp;
     bool sequence_complete;
     std::string *command;
-
-    void serialize(std::vector<unsigned char> *v) const {
-        v->reserve(command->length() + 6);
-        v->push_back(MESSAGE_COMMAND);
-        timestamp->serialize(v);
-        if (sequence_complete) v->push_back(1); else v->push_back(0);
-        serialize_string(command, v);
-    }
 };
 
 class CommandAck {
@@ -434,18 +365,6 @@ class CommandAck {
     __attribute__((unused)) CommandAck(RoverTimestamp *timestamp, bool ack) {
         this->timestamp = timestamp;
         this->ack = ack;
-    }
-
-    // deserializing constructor
-    explicit CommandAck(std::vector<unsigned char> *v)
-    noexcept(false)
-    {
-        // check message type
-        if (v->at(0) != MESSAGE_COMMAND_ACK)
-            throw std::runtime_error(reinterpret_cast<const char *>(String(
-                    "Wrong message type: expected MESSAGE_COMMAND_ACK, got ").concat(message_type(v->at(5)))));
-        timestamp = new RoverTimestamp(v, 1);
-        ack = (v->at(4) > 0);
     }
 
     ~CommandAck() {
@@ -529,19 +448,10 @@ void setup() {
 
 TelemetryMessage * collectTelemetry() {
     auto *msg = new TelemetryMessage();
-    // timestamp
-    msg->timestamp->hour = 0;    // TODO - get this from GPS via its RTC
-    msg->timestamp->minute = 0;
-    msg->timestamp->second = 0;
-    // location
-    msg->location->gps_lat = 0.0;  // TODO - get this from GPS
-    msg->location->gps_long = 0.0;
     msg->location->gps_alt = 69000.0;
-    msg->location->gps_speed = 0.0;
     msg->location->gps_sats = 42;
-    msg->location->mag_hdg = 0;
     // status
-    msg->status = new std::string("READY FOR ADVENTURE");
+    msg->status->assign("READY FOR ADVENTURE");
     return msg;
 }
 
@@ -558,6 +468,7 @@ void sendTelemetry() {
     auto *v = new std::vector<unsigned char>;
     // serialize the message
     msg->serialize(v);
+    delete msg;
     //dump_buffer(v);
     // check the size - must be <= MAX_MESSAGE_SIZE
     if (v->size() > MAX_MESSAGE_SIZE) {
@@ -612,15 +523,16 @@ void sendTelemetry() {
                     for (unsigned char i : ack_buf) ack_vec->push_back(i);
                     try {
                         auto *ack = new TelemetryAck(ack_vec);
+                        delete ack_vec;
                         debug("Received TACK (ack=" + String(ack->ack) + ", command_waiting=" + String(ack->command_waiting) + ")");
                         display("TACK (ack=" + String(ack->ack) + ",cmd=" + String(ack->command_waiting) + ")");
                         if (ack->ack) {
                             complete = true;
-                            delete ack_vec;
                             delete ack;
                             break;
                         }
-                    } catch (std::exception &e) {}
+                        delete ack;
+                    } catch (std::exception &e) { debug("Error while deserializing TACK"); }
                     // if we get here, either the station NAK'ed us or sent a garbled ACK, so re-send
                     debug("NAK! re-sending last packet.");
                     display("NAK!");
@@ -641,7 +553,6 @@ void sendTelemetry() {
         delay(MSG_DELAY);
     }
     delete v;
-    delete msg;
     update_signal_strength();
     debug("sendTelemetry() complete.");
 }
@@ -654,9 +565,9 @@ void loop() {
         display(String(i));
         delay(1000);
     }
-    rf69.printRegisters();
+    //rf69.printRegisters();
 #endif
-    for (int i = 1; i < 1000000; i++) {
+    for (int i = 0; i < 1000000; i++) {
         sendTelemetry();
         delay(TELEMETRY_INTERVAL);
     }
