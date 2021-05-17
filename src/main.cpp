@@ -58,8 +58,6 @@
  * GPS: uses RX (0), TX (1)
  * Adalogger: RTC uses I2C, SD uses SPI with CS on 10
  * Current sensor: uses I2C
- *
- * TODO go through this whole thing and look for memory leaks
  ******************************************************************/
 
 #include <string>
@@ -70,6 +68,7 @@
 #include <U8g2lib.h>
 #include <RH_RF69.h>
 #include <Adafruit_GPS.h>
+#include <encryption_key.h> // defines 16-byte array encryption_key and 2-byte array sync_words
 
 #define USB_DEBUG
 
@@ -106,7 +105,7 @@ RH_RF69 rf69(11, 19);
 U8G2_SH1107_64X128_2_HW_I2C u8g2(/* rotation=*/ U8G2_R3, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 21, /* data=*/ 22);
 
 // message timing parameters
-#define ACK_TIMEOUT 500 // millis to wait for an ack msg
+#define ACK_TIMEOUT 1000 // millis to wait for an ack msg
 #define MSG_DELAY 100 // millis to wait between Rx and Tx, to give the other side time to switch from Tx to Rx
 #define LISTEN_DELAY 50 // millis to wait between checks of the receive buffer when receiving
 #define TELEMETRY_INTERVAL 5000 // millis to wait after a successful telemetry exchange before sending another
@@ -242,20 +241,18 @@ public:
     unsigned short gps_hdg;
 
     RoverLocData() {
-        // TODO set these from the GPS
+        gps_sats = GPS.satellites;
         if (GPS.fix) {
             gps_lat = GPS.latitudeDegrees; // there's also a N/S/E/W attached to these?
             gps_long = GPS.longitudeDegrees;
             gps_alt = GPS.altitude; // this is in meters, THANKS COMMUNISTS
             gps_speed = GPS.speed; // in knots for some reason, THANKS SAILORS TODO: convert
-            gps_sats = GPS.satellites;
             gps_hdg = GPS.angle;
         } else {
             gps_lat = 0.0; // a big bucket of zeroes means the GPS doesn't have a fix yet
             gps_long = 0.0;
             gps_alt = 0.0;
             gps_speed = 0.0;
-            gps_sats = 0;
             gps_hdg = 0;
         }
     }
@@ -481,9 +478,13 @@ void sendTelemetry() {
         return;
     }
     bool complete = false;
+    unsigned short tries = 0;
     while (!complete) {
         // send it
-        debug("Sending telemetry packet...");
+        if (tries == 0)
+            debug("Sending telemetry packet...");
+        else
+            debug("Sending telemetry packet...RETRY " + String(tries));
         rf69.send(v->data(), v->size());
         debug("Telemetry packet sent, waiting for ACK");
         display("Waiting for ACK");
@@ -495,6 +496,7 @@ void sendTelemetry() {
         while (now < start + ACK_TIMEOUT) {
             if (rf69.available())
             {
+//                debug("available() returned true");
                 len = 64;
                 bool r = rf69.recv(reinterpret_cast<uint8_t *>(&ack_buf), &len);
 //                debug("r=" + String(r) + ", len=" + String(len));
@@ -554,6 +556,7 @@ void sendTelemetry() {
             }
         }
         // if we get here and complete==false, we timed out waiting for ACK, so re-send
+        tries++;
         delay(MSG_DELAY);
     }
     delete v;
@@ -582,11 +585,9 @@ void setup() {
         display("setFrequency failed");
     if (!rf69.setModemConfig(rf69.FSK_Rb9_6Fd19_2)) // FSK, Whitening, Rb = 9.6kbs,  Fd = 19.2kHz
         display("setModemConfig failed");
+    rf69.setSyncWords(sync_words, 2);  // must define in encryption_key.h, 2-byte array
+    rf69.setEncryptionKey(encryption_key); // must define in encryption_key.h, 16-byte array
     rf69.setTxPower(17, true);
-    // TODO encryption key
-//    uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-//                      0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-//    rf69.setEncryptionKey(key);
     uint version = rf69.deviceType();
     debug(String("RFM69 initialized: version 0x" + String(version, HEX)));
 
