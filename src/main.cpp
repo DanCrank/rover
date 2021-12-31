@@ -29,6 +29,9 @@
  * Adafruit INA219 Power Monitoring Featherwing
  * https://learn.adafruit.com/adafruit-ina219-current-sensor-breakout
  *
+ * Adafruit BME680 temperature / humidity / pressure / gas sensor
+ * https://learn.adafruit.com/adafruit-bme680-humidity-temperature-barometic-pressure-voc-gas/
+ * 
  * Slamtec RoboPeak RPLIDAR
  * https://www.adafruit.com/product/4010
  * https://cdn-shop.adafruit.com/product-files/4010/4010_datasheet.pdf
@@ -37,27 +40,21 @@
  * https://github.com/robopeak/rplidar_arduino
  * See also: https://github.com/DanCrank/rplidar_arduino/tree/begin-returns-void
  *
- * Vehicle hardware TBD
- *
- * Camera(s) TBD (Is there a solution for interfacing a camera with a Feather?)
- *
- * Other sensors TBD
- *
+ * Vehicle hardware is currently the same as the previous rover:
+ * DFRobot Devastator tank chassis (6V metal gear motor version)
+ * https://www.dfrobot.com/product-1477.html
+ * 
  * Pin assignments:
- * 0-1 reserved for hardware UART
- * 8 maybe reserved for onboard NeoPixel?
- * 21-22 reserved for I2C
- * 23-25 reserved for SPI
- *
- * LIDAR: will use Serial1 (0 / 1)
- * Radio: MOSI (24), MISO (23), SCK (25), jumper CS to 11 (labeled A), IRQ to 19 (labeled F),
- *          RST to 5 (labeled E) (so display pushbutton can reset the radio?)
+ * LIDAR: will use Serial1 (0 / 1), motor control on A0 (14)
+ * Radio: uses SPI - MOSI (24), MISO (23), SCK (25), jumper CS to 11 (labeled A),
+ *          IRQ to 19 (labeled F), RST to 5 (labeled E) (so display pushbutton
+ *          can reset the radio?)
  * Display: uses I2C (21 / 22), addr 0x3C
- * Motor driver: uses I2C
+ * Motor driver: uses I2C (addr 0x60)
  * IMU: uses I2C, addr 0x1C for the compass, 0x6A for the gyro/accelerometer
- * GPS: uses Serial2 defined on SERCOM0 using pins 15 / 18
+ * GPS: uses Serial2 defined on SERCOM3 using pins 12 / 13
  * Adalogger: RTC uses I2C (addr 0x68), SD uses SPI with CS on 10
- * Current sensor: uses I2C
+ * Current sensor: uses I2C (addr 0x40)
  ******************************************************************/
 
 #include <string>
@@ -71,10 +68,11 @@
 #include <RH_RF69.h>
 #include <Adafruit_GPS.h>
 #include <encryption_key.h> // defines 16-byte array encryption_key and 2-byte array sync_words
+#include <fake_encryption_key.h>
 
 #define USB_DEBUG
 
-#define USE_ENCRYPTION // we're not yet, but we will
+#define USE_ENCRYPTION
 #ifdef USE_ENCRYPTION
 #define MAX_MESSAGE_SIZE 59
 #else
