@@ -67,8 +67,10 @@
 #include <U8g2lib.h>
 #include <RH_RF69.h>
 #include <Adafruit_GPS.h>
+#include "TimerInterrupt_Generic.h"
+#include "ISR_Timer_Generic.h"
+#include "RPLidar.h"
 #include <encryption_key.h> // defines 16-byte array encryption_key and 2-byte array sync_words
-#include <fake_encryption_key.h>
 
 #define USB_DEBUG
 
@@ -113,12 +115,36 @@ void SERCOM3_3_Handler()
 Adafruit_GPS GPS(&Serial2);
 #define GPSECHO false // set true to echo raw GPS data to console for debugging
 
+// interrupt routine for ingesting GPS data
+#define READGPS_INTERVAL_MS 1
+void readGPSData(void)
+{
+    if (GPS.available()) {
+        char c = GPS.read();
+        if (GPSECHO) {
+            Serial.write(c);
+        }
+    }
+}
+SAMDTimer GPSTimer(TIMER_TC3);
+
 // global fn for checking free memory
 extern "C" char *sbrk(int i);
 
 unsigned short free_ram () {
     char stack_dummy = 0;
     return &stack_dummy - sbrk(0);
+}
+
+// send a debug message to the USB port
+void debug(const String& s)
+{
+#ifdef USB_DEBUG
+    String t = "00000000" + String(millis());
+    t.remove(0, t.length() - 8);
+    Serial.println(t + " | " + s);
+    Serial.flush();
+#endif
 }
 
 // global for keeping signal strength of last received message
@@ -133,6 +159,57 @@ RH_RF69 rf69(11, 19);
 // Singleton instance of the display driver
 // https://github.com/olikraus/u8g2/wiki/u8g2setupcpp
 U8G2_SH1107_64X128_2_HW_I2C u8g2(/* rotation=*/ U8G2_R3, /* reset=*/ U8X8_PIN_NONE, /* clock=*/ 21, /* data=*/ 22);
+
+// Singleton instance of the RPLidar driver
+RPLidar lidar;
+const unsigned int RPLIDAR_MOTOR = 16;
+
+// keep a global buffer representing the most recent scan of the surroundings
+// each bin is a ten-degree segment (0-9.99, 10-19.99, etc.)
+// if you want to use a different bin / buffer size, keep in mind that the
+// code is currently optimized for an even number of bins and an even
+// number of degrees in each bin. so good values of NAV_BUFFER_SIZE would
+// be 18, 20, 30, 36, 60, 90, 180
+struct nav_scan
+{
+  unsigned int distanceNear;
+  unsigned int pointCount;
+};
+const unsigned int NAV_BUFFER_SIZE = 60;
+nav_scan navBuffer[NAV_BUFFER_SIZE];
+
+void initNavBuffer()
+{
+  debug("InitNavBuffer()");
+  for (unsigned int i = 0; i < NAV_BUFFER_SIZE; i++)
+  {
+    navBuffer[i].distanceNear = 0;
+    navBuffer[i].pointCount = 0;
+  }
+}
+
+// setting to collect more than one complete LIDAR rotation in a "scan".
+// this must be at least 1. values higher than 1 may help the vehicle make
+// better maneuvering decisions, but interfere with the actual maneuvering
+// because the time spent scanning extends the length of the decision-making
+// cycle.
+const unsigned int OVERSCAN = 1;
+
+// LIDAR motor speed (0-255)
+const unsigned int LIDAR_MOTOR_SPEED = 255;
+
+// minimum distance, inside which LIDAR data points are thrown out. this is
+// used to filter out spurious data points at unreasonably close distances
+// (inside the perimeter of the vehicle or thereabouts). value in mm.
+// the datasheet lists minimum measurable distance as 150mm, so that's a
+// good initial value.
+const unsigned int LIDAR_MINIMUM_DISTANCE = 100;
+
+// minimum quality, beneath which LIDAR data points are thrown out. this is
+// a score assigned by the device, and its meaning is not documented (it is
+// an unsigned byte coming from the device). in practice, most data points
+// are observed to be quality = 15.
+const unsigned int LIDAR_MINIMUM_QUALITY = 4;
 
 // message timing parameters
 #define ACK_TIMEOUT 1000 // millis to wait for an ack msg
@@ -443,17 +520,6 @@ class CommandAck {
         if (ack) v->push_back(1); else v->push_back(0);
     }};
 
-// send a debug message to the USB port
-void debug(const String& s)
-{
-#ifdef USB_DEBUG
-    String t = "00000000" + String(millis());
-    t.remove(0, t.length() - 8);
-    Serial.println(t + " | " + s);
-    Serial.flush();
-#endif
-}
-
 // dump a byte vector representing a serialized message
 void dump_buffer(std::vector<unsigned char> *v) {
 #ifdef USB_DEBUG
@@ -473,6 +539,7 @@ void dump_buffer(std::vector<unsigned char> *v) {
 
 // display a message on the OLED display
 void display(const String& str) {
+    debug("Display: " + str);
     u8g2.firstPage();
     do {
         u8g2.setCursor(0, 20);
@@ -480,15 +547,157 @@ void display(const String& str) {
     } while ( u8g2.nextPage() );
 }
 
+void update_signal_strength() {
+    last_signal_strength = rf69.lastRssi();
+}
+
+/*
+ * LIDAR functions
+ */
+
+// note: lidarInit only sets up the serial port and motor control.
+// it does not actually attempt any communication with the device.
+void lidarInit()
+{
+  debug("lidarInit()");
+  lidar.begin(Serial1);
+  pinMode(RPLIDAR_MOTOR, OUTPUT);
+  analogWrite(RPLIDAR_MOTOR, 0);
+  debug("lidarInit() complete");
+  //setStatus(STATUS_INITIALIZING);
+}
+
+// handshake with the lidar device and start scanning.
+// return TRUE if connection was successful, FALSE otherwise.
+bool lidarConnect()
+{
+  debug("lidarConnect()");
+  //setStatus(STATUS_LIDAR_CONNECTING);
+  // try to detect RPLIDAR
+  rplidar_response_device_info_t info;
+  if (IS_OK(lidar.getDeviceInfo(info)))
+  {
+    debug("lidar.getDeviceInfo OK model=" + String(info.model) + " firmware_version=" + String(info.firmware_version) + " hardware_version=" + String(info.hardware_version));
+    if (IS_OK(lidar.startScan()))
+    {
+      debug("lidar.startScan OK, starting motor");
+      // start motor rotating
+      analogWrite(RPLIDAR_MOTOR, LIDAR_MOTOR_SPEED);
+      delay(1000);
+      return true;
+    }
+  }
+  debug("lidarConnect() FAILED!");
+  return false;
+}
+
+// take one (or more) complete scans of the surroundings and update the buffer
+// return TRUE if the buffer is updated, FALSE if there was a problem
+// and we have to stop to re-connect to the LIDAR.
+bool lidarScan()
+{
+  unsigned long startTime = millis();
+  debug("lidarScan()");
+  //derive a couple of unchanging values, for a bit of efficiency
+  static unsigned int binSize = 360 / NAV_BUFFER_SIZE;
+  static unsigned int halfABin = binSize / 2;
+  initNavBuffer();
+  unsigned int pointsCollected = 0;
+  unsigned int pointsThrownOut = 0;
+  unsigned int startBits = 0;
+  //setStatus(STATUS_SCANNING);
+  while (true)
+  {
+    // wait for a data point
+    if (IS_OK(lidar.waitPoint()))
+    {
+      RPLidarMeasurement point = lidar.getCurrentPoint();
+      // we want this function to be fast - therefore round off the floating point values first thing
+      unsigned int theAngle = round(point.angle);
+      unsigned int theDistance = round(point.distance);
+      if (point.startBit)
+      {
+        startBits++;
+        if (startBits > OVERSCAN)
+        {
+          //finish the scan
+          debug("Scan complete; " + String(pointsCollected) + " points collected, " + String(pointsThrownOut) + " thrown out");
+          debug("Scan took " + String(millis() - startTime) + " milliseconds at overscan=" + OVERSCAN);
+          return true;
+        }
+      }
+      if ((point.quality >= LIDAR_MINIMUM_QUALITY) && (theDistance > LIDAR_MINIMUM_DISTANCE)) // filter out bad data points
+      {
+        pointsCollected++;
+        // normalize the heading
+        // with the current mounting, "forward" is the direction reported by the lidar as
+        // 90 degrees. we need that to be stored as 180 degrees (putting that in the middle
+        // of the range makes the buffer indexing simpler).
+        theAngle += 90;
+        if (theAngle >= 360) theAngle -= 360;
+        // consolidating the awkwardness here: to make navigation somewhat better, we want
+        // "straight ahead" to be in the center of a bin, not on the dividing line between
+        // two bins. So navBuffer[0] is going to be directly aft and
+        // navBuffer[NAV_BUFFER_SIZE/2] will be directly forward.
+        unsigned int bin = (unsigned int)((theAngle + halfABin) / binSize);
+        if (bin == NAV_BUFFER_SIZE) bin = 0;  // awkward wrap around conversion
+        // save the nearest blip in each bin for obstacle detection
+        if ((navBuffer[bin].pointCount == 0) || (point.distance < navBuffer[bin].distanceNear))
+          navBuffer[bin].distanceNear = point.distance;
+        navBuffer[bin].pointCount++;
+      } else pointsThrownOut++;
+    } else {
+      // here if there's an error; return FALSE so the control loop
+      // can stop the vehicle and recover
+      debug("lidarScan() timed out while waiting for data point");
+      return false;
+    }
+  }
+}
+
+// return the bin index of the nearest obstruction, or -1 if no obstructions are visible
+// inside the NAV_AVOID_CONE and within NAV_AVOID_DISTANCE millimeters.
+// temporary values for hacking
+#define NAV_AVOID_DISTANCE 99999
+#define NAV_AVOID_CONE 30
+int navFindObstruction(int sector = (NAV_BUFFER_SIZE / 2), unsigned int distance = NAV_AVOID_DISTANCE)
+{
+  debug("navFindObstruction()");
+  int bin = -1;
+  unsigned int range = distance + 1;
+  for (int i = sector - NAV_AVOID_CONE; i <= sector + NAV_AVOID_CONE; i++)
+  {
+    int realIndex = (i + NAV_BUFFER_SIZE) % NAV_BUFFER_SIZE;  // handle indexes that span buffer boundaries
+    if (navBuffer[realIndex].pointCount == 0)
+    {
+      debug("I have no data for sector " + String(i) + ", declaring that sector obstructed.");
+      //bin = realIndex;
+      //range = 0;
+    } else if ((navBuffer[realIndex].distanceNear < distance) &&
+             (navBuffer[realIndex].distanceNear < range)) {
+      bin = realIndex;
+      range = navBuffer[realIndex].distanceNear;
+    }
+  }
+  if (bin == -1)
+    debug("No obstruction detected");
+  else
+    debug("Nearest obstruction detected in sector " + String(bin) + ", range=" + String(range) + "mm");
+  return bin;
+}
+
 TelemetryMessage * collectTelemetry() {
     auto *msg = new TelemetryMessage();
     // status
-    msg->status->assign("READY FOR ADVENTURE");
+    // msg->status->assign("READY FOR ADVENTURE");
+    // temporarily using this for lidar data until I add it to the telemetry message
+    int obstruction = navFindObstruction();
+    if (obstruction > 0) {
+        msg->status->assign("Obstruction in sector ");
+        msg->status->append(String(obstruction).c_str());
+    } else
+        msg->status->assign("No obstructions seen");
     return msg;
-}
-
-void update_signal_strength() {
-    last_signal_strength = rf69.lastRssi();
 }
 
 // send a telemetry packet and wait for acknowledgement; retry if NAK'ed or no ACK
@@ -635,22 +844,27 @@ void setup() {
     GPS.sendCommand(PGCMD_ANTENNA);
     GPS.sendCommand(PMTK_Q_RELEASE);
     debug("GPS initialized");
+
+    // start interrupt timer for GPS
+    if (GPSTimer.attachInterruptInterval(READGPS_INTERVAL_MS, readGPSData))
+        display("GPS interrupt started");
+    else
+        display("GPS interrupt failed");
+
+    // initialize LIDAR
+    display("initializing LIDAR");
+    lidarInit();
+    if (!lidarConnect())
+        display("LIDAR connect failed");
+    analogWrite(RPLIDAR_MOTOR, LIDAR_MOTOR_SPEED);
 }
 
 void loop() {
-    // more copypasta from https://platformio.org/lib/show/20/Adafruit%20GPS%20Library
-    // see also: https://learn.adafruit.com/adafruit-ultimate-gps-featherwing/arduino-library
-    // TODO ladyada recommends hanging this read() call on a 1ms interrupt
-    if (GPS.available()) {
-        char c = GPS.read();
-        if (GPSECHO) {
-            Serial.write(c);
-        }
-    }
     if (GPS.newNMEAreceived()) {
-        // parsing still has to happen in loop()
         GPS.parse(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
     }
+    if (!lidarScan())
+        display("Lidar scan failed!");
     if (millis() - telemetry_timer > TELEMETRY_INTERVAL) {
         telemetry_timer = millis();
         sendTelemetry();
