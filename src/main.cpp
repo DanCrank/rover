@@ -49,14 +49,14 @@
  * 21-22 reserved for I2C
  * 23-25 reserved for SPI
  *
- * LIDAR: will need to go to a software UART - RX (16), TX (17), connect motor control to 14
+ * LIDAR: will use Serial1 (0 / 1)
  * Radio: MOSI (24), MISO (23), SCK (25), jumper CS to 11 (labeled A), IRQ to 19 (labeled F),
  *          RST to 5 (labeled E) (so display pushbutton can reset the radio?)
- * Display: uses I2C, pushbuttons are on 5, 6, 9
+ * Display: uses I2C (21 / 22), addr 0x3C
  * Motor driver: uses I2C
- * Accelerometer: (I think) can use either I2C or SPI - stick with I2C for now
- * GPS: uses RX (0), TX (1)
- * Adalogger: RTC uses I2C, SD uses SPI with CS on 10
+ * IMU: uses I2C, addr 0x1C for the compass, 0x6A for the gyro/accelerometer
+ * GPS: uses Serial2 defined on SERCOM0 using pins 15 / 18
+ * Adalogger: RTC uses I2C (addr 0x68), SD uses SPI with CS on 10
  * Current sensor: uses I2C
  ******************************************************************/
 
@@ -64,6 +64,8 @@
 #include <exception>
 #include <stdexcept>
 #include <vector>
+#include <Arduino.h>
+#include "wiring_private.h" // needed for setting up Serial2
 #include <SPI.h>
 #include <U8g2lib.h>
 #include <RH_RF69.h>
@@ -80,8 +82,38 @@
 #endif
 
 // global setup for GPS
-#define GPSSerial Serial1
-Adafruit_GPS GPS(&GPSSerial);
+// creating a second Serial on SERCOM3
+// see: https://learn.adafruit.com/using-atsamd21-sercom-to-add-more-spi-i2c-serial-ports/creating-a-new-serial
+// NOTE: SERCOM3 is the ONLY device I could get to work as a second UART on the feather M4. After lengthy study
+// of the datasheet, it looked like sercom4/alt and sercom0/alt should have worked, but in practice neither one
+// did. It's possible that there's some other step needed (besides using PIO_SERCOM_ALT in the pinPeripheral
+// call during setup) that I was missing.
+#define PIN_SERIAL2_RX 13  // PA23
+#define PAD_SERIAL2_RX (SERCOM_RX_PAD_1)
+#define PIN_SERIAL2_TX 12  // PA22
+#define PAD_SERIAL2_TX (UART_TX_PAD_0)
+
+Uart Serial2(&sercom3, PIN_SERIAL2_RX, PIN_SERIAL2_TX, PAD_SERIAL2_RX, PAD_SERIAL2_TX);
+
+void SERCOM3_0_Handler()
+{
+  Serial2.IrqHandler();
+}
+void SERCOM3_1_Handler()
+{
+  Serial2.IrqHandler();
+}
+void SERCOM3_2_Handler()
+{
+  Serial2.IrqHandler();
+}
+void SERCOM3_3_Handler()
+{
+  Serial2.IrqHandler();
+}
+
+Adafruit_GPS GPS(&Serial2);
+#define GPSECHO false // set true to echo raw GPS data to console for debugging
 
 // global fn for checking free memory
 extern "C" char *sbrk(int i);
@@ -588,18 +620,22 @@ void setup() {
     rf69.setSyncWords(sync_words, 2);  // must define in encryption_key.h, 2-byte array
     rf69.setEncryptionKey(encryption_key); // must define in encryption_key.h, 16-byte array
     rf69.setTxPower(17, true);
-    uint version = rf69.deviceType();
+    uint16_t version = rf69.deviceType();
     debug(String("RFM69 initialized: version 0x" + String(version, HEX)));
 
     // initialize GPS / RTC
     display("initializing GPS");
+    // Assign RX and TX pins to SERCOM
+    // see: https://learn.adafruit.com/using-atsamd21-sercom-to-add-more-spi-i2c-serial-ports/creating-a-new-serial
+    pinPeripheral(PIN_SERIAL2_RX, PIO_SERCOM);
+    pinPeripheral(PIN_SERIAL2_TX, PIO_SERCOM);
     // copied from https://platformio.org/lib/show/20/Adafruit%20GPS%20Library
     GPS.begin(9600);
+    delay(1000);
     GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
     GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ); // 1 Hz update rate
     GPS.sendCommand(PGCMD_ANTENNA);
-    delay(1000);
-    GPSSerial.println(PMTK_Q_RELEASE); // not sure why we do this as there seems to be no way to read it back
+    GPS.sendCommand(PMTK_Q_RELEASE);
     debug("GPS initialized");
 }
 
@@ -607,7 +643,12 @@ void loop() {
     // more copypasta from https://platformio.org/lib/show/20/Adafruit%20GPS%20Library
     // see also: https://learn.adafruit.com/adafruit-ultimate-gps-featherwing/arduino-library
     // TODO ladyada recommends hanging this read() call on a 1ms interrupt
-    char c = GPS.read();
+    if (GPS.available()) {
+        char c = GPS.read();
+        if (GPSECHO) {
+            Serial.write(c);
+        }
+    }
     if (GPS.newNMEAreceived()) {
         // parsing still has to happen in loop()
         GPS.parse(GPS.lastNMEA()); // this also sets the newNMEAreceived() flag to false
