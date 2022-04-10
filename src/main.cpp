@@ -735,32 +735,34 @@ void sendTelemetry() {
         while (now < start + ACK_TIMEOUT) {
             if (rf69.available())
             {
-//                debug("available() returned true");
+                debug("available() returned true");
                 len = 64;
                 bool r = rf69.recv(reinterpret_cast<uint8_t *>(&ack_buf), &len);
-//                debug("r=" + String(r) + ", len=" + String(len));
+                debug("r=" + String(r) + ", len=" + String(len));
                 if (r && (len > 0)) {
-//                    debug("Received response...");
-//                    for (int i = 0; i < 64; i += 8) {
-//                        String s;
-//                        s.reserve(24);
-//                        s.concat(String(ack_buf[i], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 1], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 2], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 3], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 4], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 5], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 6], HEX));
-//                        s.concat(' ');
-//                        s.concat(String(ack_buf[i + 7], HEX));
-//                        debug(s);
-//                    }
+#ifdef USB_DEBUG
+                    debug("Received response...");
+                    for (int i = 0; i < 64; i += 8) {
+                       String s;
+                       s.reserve(24);
+                       s.concat(String(ack_buf[i], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 1], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 2], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 3], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 4], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 5], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 6], HEX));
+                       s.concat(' ');
+                       s.concat(String(ack_buf[i + 7], HEX));
+                       debug(s);
+                   }
+#endif
                     // deserialize
                     // this is memory inefficient, but copying to a vector here lets
                     // all the deserialization functions automatically do range checking
@@ -828,8 +830,10 @@ void setup() {
     rf69.setEncryptionKey(encryption_key); // must define in encryption_key.h, 16-byte array
     rf69.setTxPower(17, true);
     uint16_t version = rf69.deviceType();
+#ifdef USB_DEBUG
     debug(String("RFM69 initialized: version 0x" + String(version, HEX)));
-
+    rf69.printRegisters();
+#endif
     // initialize GPS / RTC
     display("initializing GPS");
     // Assign RX and TX pins to SERCOM
