@@ -31,7 +31,7 @@
  *
  * Adafruit BME680 temperature / humidity / pressure / gas sensor
  * https://learn.adafruit.com/adafruit-bme680-humidity-temperature-barometic-pressure-voc-gas/
- * 
+ *
  * Slamtec RoboPeak RPLIDAR
  * https://www.adafruit.com/product/4010
  * https://cdn-shop.adafruit.com/product-files/4010/4010_datasheet.pdf
@@ -43,7 +43,7 @@
  * Vehicle hardware is currently the same as the previous rover:
  * DFRobot Devastator tank chassis (6V metal gear motor version)
  * https://www.dfrobot.com/product-1477.html
- * 
+ *
  * Pin assignments:
  * LIDAR: will use Serial1 (0 / 1), motor control on A0 (14)
  * Radio: uses SPI - MOSI (24), MISO (23), SCK (25), jumper CS to 11 (labeled A),
@@ -375,13 +375,13 @@ public:
     }
 };
 
-// TODO - make a virtual base class to factor out timestamp and any other common stuff
 class TelemetryMessage {
 public:
-    RoverTimestamp *timestamp;
-    RoverLocData *location;
-    short signal_strength;
-    unsigned short free_memory;
+    RoverTimestamp *timestamp;   // bytes 2-7
+    RoverLocData *location;      // bytes 8-25
+    short signal_strength;       // bytes 26-27
+    unsigned short free_memory;  // bytes 28-29
+    unsigned char retries;      // byte 30
     std::string *status;
 
     TelemetryMessage() {
@@ -390,6 +390,7 @@ public:
         status = new std::string();
         this->signal_strength = last_signal_strength;
         free_memory = free_ram();
+        retries = 0;
     }
 
     ~TelemetryMessage() {
@@ -399,12 +400,13 @@ public:
     }
 
     void serialize(std::vector<unsigned char> *v) {
-        v->reserve(status->length() + 27);
+        v->reserve(status->length() + 30);
         v->push_back(MESSAGE_TELEMETRY);
         timestamp->serialize(v);
         location->serialize(v);
         serialize_short(&signal_strength, v);
         serialize_ushort(&free_memory, v);
+        v->push_back(retries);
         serialize_string(status, v);
     }
 };
@@ -717,13 +719,23 @@ void sendTelemetry() {
         return;
     }
     bool complete = false;
-    unsigned short tries = 0;
+    unsigned char tries = 0;
     while (!complete) {
         // send it
         if (tries == 0)
             debug("Sending telemetry packet...");
-        else
+        else {
             debug("Sending telemetry packet...RETRY " + String(tries));
+            //HACK that will get cleaned up when I port this to Rust...
+            //to avoid having to re-serialize the message (and delete/re-allocate
+            //the vector), poke the "tries" value directly into the
+            //already-serialized vector
+            //dump_buffer(v);
+            //debug("Retries was: " + String(v->at(30)));
+            v->at(30) = tries;
+            //dump_buffer(v);
+            //debug("Retries is now: " + String(v->at(30)));
+        }
         rf69.send(v->data(), v->size());
         debug("Telemetry packet sent, waiting for ACK");
         display("Waiting for ACK");
@@ -829,6 +841,9 @@ void setup() {
     rf69.setSyncWords(sync_words, 2);  // must define in encryption_key.h, 2-byte array
     rf69.setEncryptionKey(encryption_key); // must define in encryption_key.h, 16-byte array
     rf69.setTxPower(17, true);
+    // RadioHead seems to never set RssiThresh, and the power-on value is not the value
+    // recommended in the docs. Use the low-level spi method to set it here.
+    rf69.spiWrite(RH_RF69_REG_29_RSSITHRESH, 233); // -116.5 dB, this is the recommended value
     uint16_t version = rf69.deviceType();
 #ifdef USB_DEBUG
     debug(String("RFM69 initialized: version 0x" + String(version, HEX)));
