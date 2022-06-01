@@ -29,6 +29,16 @@
 #include <Arduino.h>
 
 /******************************************************************
+ * Motor driver
+ ******************************************************************/
+void setupDrive();
+void driveForward(uint8_t speed);
+void driveReverse(uint8_t speed);
+void driveStop();
+void driveLeft(uint8_t speed);
+void driveRight(uint8_t speed);
+
+/******************************************************************
  * GPS
  ******************************************************************/
 #define READGPS_INTERVAL_MS 1
