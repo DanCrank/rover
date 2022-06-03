@@ -4,6 +4,8 @@
 
 #include "rover.h"
 
+extern uint16_t loopTime;
+
 TelemetryMessage * collectTelemetry() {
     auto *msg = new TelemetryMessage();
     // status
@@ -15,5 +17,8 @@ TelemetryMessage * collectTelemetry() {
         msg->status->append(String(obstruction).c_str());
     } else
         msg->status->assign("No obstructions seen");
+    // char loopTimeStatus[120];
+    // sprintf(loopTimeStatus, "Loop time: %d ms", loopTime);
+    // msg->status->assign(loopTimeStatus);
     return msg;
 }

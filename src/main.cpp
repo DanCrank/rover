@@ -11,6 +11,13 @@
 #include "TimerInterrupt_Generic.h"
 
 extern StatusDisplay *statusDisplay;
+extern Adafruit_GPS GPS;
+
+// uint32_t telemetryTimer;
+// uint32_t displayUpdateTimer;
+// // temporary for navigation debugging
+// uint32_t motorDemoTimer;
+// #define MOTOR_DEMO_INTERVAL 10000
 
 // global fn for checking free memory
 extern "C" int8_t *sbrk(int16_t i);
@@ -22,6 +29,9 @@ uint16_t free_ram () {
 
 // 1ms interrupt timer to drive various things
 SAMDTimer MilliTimer(TIMER_TC3);
+
+// loop timer for performance testing
+uint16_t loopTime;
 
 // send a debug message to the USB port
 void debug(const String& s)
@@ -36,6 +46,15 @@ void debug(const String& s)
 
 void milliInterrupt(void) {
     readGPSData();
+}
+
+void cronUpdateDisplay() {
+    statusDisplay->updateDisplay();
+}
+
+// TODO temporary for turning demo
+void cronNavDemo() {
+    navTurn(-90);
 }
 
 void setup() {
@@ -53,52 +72,56 @@ void setup() {
     setupRfm69();
     setupGPS();
     setupLidar();
+    setupIMU();
     setupDrive();
 
     // start interrupt timer
     if (MilliTimer.attachInterruptInterval(READGPS_INTERVAL_MS, milliInterrupt))
         debug("Interrupt started");
     else
-        debug("Interrupt failed");
+        debug("***Interrupt failed***");
+    // telemetryTimer = millis();
+    // displayUpdateTimer = millis();
+    // // temporary for navigation debugging
+    // motorDemoTimer = millis() + 15000;
+    // register cron jobs
+    struct CronJob cronJob = {&sendTelemetry, TELEMETRY_INTERVAL, 0};
+    registerCronJob(&cronJob);
+    cronJob = {&cronUpdateDisplay, DISPLAY_UPDATE_INTERVAL, 0};
+    registerCronJob(&cronJob);
+    // TODO temporary for turning demo
+    cronJob = {&cronNavDemo, 10000, 15000};
+    registerCronJob(&cronJob);
+    loopTime = 0;
 }
 
-uint32_t telemetryTimer = millis();
-uint32_t displayUpdateTimer = millis();
-// temporary for motor demo
-uint32_t motorDemoTimer = millis();
-#define MOTOR_DEMO_INTERVAL 3000
-uint8_t motorStates[] = {1, 0, 2, 0, 3, 0, 4, 0};
-uint8_t motorState = 0;
+uint16_t now;
 
 void loop() {
+    now = millis();
     checkForNewGPSData();
     if (!lidarScan()) {
         //debug("Lidar scan failed!");
         statusDisplay->setLidarOK(false);
     } else statusDisplay->setLidarOK(true);
+    checkCronJobs();
     // TODO: standardize something better for these things that
     // are polling to happen at certain intervals; there will
     // probably be more of them
-    if (millis() - telemetryTimer > TELEMETRY_INTERVAL) {
-        telemetryTimer = millis();
-        sendTelemetry();
-    }
-    if (millis() - displayUpdateTimer > DISPLAY_UPDATE_INTERVAL) {
-        displayUpdateTimer = millis();
-        statusDisplay->updateDisplay();
-    }
-    //temporary code to exercise motors
-    if (millis() - motorDemoTimer > MOTOR_DEMO_INTERVAL) {
-        motorDemoTimer = millis();
-        // advance to next motor state
-        motorState++;
-        if (motorState >= sizeof(motorStates)) motorState = 0;
-        switch (motorStates[motorState]) {
-            case 0: debug("stop"); driveStop(); break;
-            case 1: debug("forward"); driveForward(32); break;
-            case 2: debug("reverse"); driveReverse(32); break;
-            case 3: debug("left"); driveLeft(32); break;
-            case 4: debug("right"); driveRight(32); break;
-        }
-    }
+    // if (millis() - telemetryTimer > TELEMETRY_INTERVAL) {
+    //     telemetryTimer = millis();
+    //     sendTelemetry();
+    // }
+    // if (millis() - displayUpdateTimer > DISPLAY_UPDATE_INTERVAL) {
+    //     displayUpdateTimer = millis();
+    //     statusDisplay->setMagHeading(getMagneticHeading());
+    //     statusDisplay->updateDisplay();
+    // }
+    // // temporary code to exercise navigation
+    // // TODO: use a button press to enable / disable the motors
+    // if (millis() - motorDemoTimer > MOTOR_DEMO_INTERVAL) {
+    //     motorDemoTimer = millis();
+    //     navTurnInertial(-90);
+    // }
+    loopTime = millis() - now;
 }

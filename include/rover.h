@@ -12,12 +12,7 @@
  * GPS: uses Serial2 defined on SERCOM3 using pins 12 / 13
  * Adalogger: RTC uses I2C (addr 0x68), SD uses SPI with CS on 10
  * Current sensor: uses I2C (addr 0x40)
- * 
- * Note: when I broke the code up into a .h file and multiple .cpp files,
- * I started getting linker errors. Trying this solution:
- * https://github.com/khoih-prog/TimerInterrupt_Generic#howto-fix-multiple-definitions-linker-error=
- * (trying the "old standard cpp way" because I don't know what the author is talking about)
- * 
+ *
  ******************************************************************/
 
 #ifndef ROVER_h
@@ -29,6 +24,17 @@
 #include <Arduino.h>
 
 /******************************************************************
+ * Cron
+ ******************************************************************/
+struct CronJob {
+    void     (*job)();
+    uint32_t interval;
+    uint32_t lastRun;
+};
+void registerCronJob(CronJob *cronJob);
+void checkCronJobs();
+
+/******************************************************************
  * Motor driver
  ******************************************************************/
 void setupDrive();
@@ -37,6 +43,16 @@ void driveReverse(uint8_t speed);
 void driveStop();
 void driveLeft(uint8_t speed);
 void driveRight(uint8_t speed);
+
+/******************************************************************
+ * IMU
+ ******************************************************************/
+void setupIMU();
+uint16_t getMagneticHeading();
+float getYawRate();
+
+#define COMPASS_X_OFFSET -7.5
+#define COMPASS_Y_OFFSET 0
 
 /******************************************************************
  * GPS
@@ -60,8 +76,9 @@ private:
     std::atomic<bool> lidarOK;
     std::atomic<uint16_t> gpsSats;
     std::atomic<int16_t> rssi;
-    std::atomic<bool> defaultDisplay;
     std::atomic<int16_t> obstruction;
+    std::atomic<int16_t> magHeading;
+    std::atomic<bool> defaultDisplay;
     char displayBuf[DISPLAY_ROWS][DISPLAY_COLS];
     void printToDisplay(const char * str, uint16_t x, uint16_t y);
 
@@ -71,6 +88,7 @@ public:
     void setGpsSats(uint16_t newGpsSats);
     void setRssi(int16_t newRssi);
     void setObstruction(int16_t newObstruction);
+    void setMagHeading(int16_t newMagHeading);
     void display(const std::string& str);
     void returnToDefaultDisplay();
     void updateDisplay();
@@ -92,6 +110,11 @@ public:
 // of the rover (in number of sectors) that a LIDAR point can be considered
 // an obstruction.
 #define NAV_AVOID_CONE 15
+// NAV_TURN_SPEED is the speed to use for turning. this will eventually
+// go away in favor of a smarter turning function - see note in navTurn().
+// 96 seems like the sweet spot - too slow and it gets bogged down in carpet,
+// but too fast and it starts to get really inaccurate.
+#define NAV_TURN_SPEED 96
 
 struct nav_scan
 {
@@ -100,6 +123,7 @@ struct nav_scan
 };
 
 int navFindObstruction(int16_t sector = (NAV_BUFFER_SIZE / 2), uint16_t distance = NAV_AVOID_DISTANCE);
+void navTurn(int16_t degrees);
 
 /******************************************************************
  * LIDAR
@@ -257,8 +281,8 @@ class CommandAck {
 TelemetryMessage * collectTelemetry();
 
 // debug toggles
-#define USB_DEBUG // comment out to remove debugging
-#define GPSECHO false // set true to echo raw GPS data to console for debugging
+#define USB_DEBUG // uncomment to enable debug messages over USB port
+#define GPSECHO false  // set true to echo raw GPS data to console for debugging
 
 void debug(const String& s);
 uint16_t free_ram();

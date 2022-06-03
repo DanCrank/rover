@@ -64,7 +64,7 @@ void readGPSData(void)
     if (GPS.available()) {
         int8_t c = GPS.read();
         if (GPSECHO) {
-            Serial.write(c);
+                Serial.write(c);
         }
     }
 }

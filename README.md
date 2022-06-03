@@ -15,6 +15,7 @@ https://learn.adafruit.com/adafruit-stepper-dc-motor-featherwing
 
 Adafruit 9-DoF IMU ISM330DHCX + LIS3MDL Featherwing
 https://learn.adafruit.com/st-9-dof-combo
+https://www.st.com/resource/en/datasheet/lis3mdl.pdf
 
 Adafruit Ultimate GPS Featherwing
 https://learn.adafruit.com/adafruit-ultimate-gps-featherwing

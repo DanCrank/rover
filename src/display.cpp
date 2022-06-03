@@ -46,6 +46,10 @@ void StatusDisplay::setObstruction(int16_t newObstruction) {
     obstruction.store(newObstruction);
 }
 
+void StatusDisplay::setMagHeading(int16_t newMagHeading) {
+    magHeading.store(newMagHeading);
+}
+
 // display a non-default message on the OLED display
 void StatusDisplay::display(const std::string& str) {
     defaultDisplay = false;
@@ -81,9 +85,10 @@ void StatusDisplay::updateDisplay() {
         } else {
             sprintf(displayBuf[3], "OBS:NO");
         }
+        sprintf(displayBuf[4], "HDG:%d", magHeading.load());
         // print them to the display
         u8g2.clearBuffer();
-        for (unsigned short i = 0; i < 4; i++) {
+        for (unsigned short i = 0; i <= 4; i++) {
             u8g2.drawStr(0, (i + 1) * 12, displayBuf[i]);
         }
         u8g2.sendBuffer();
