@@ -13,12 +13,6 @@
 extern StatusDisplay *statusDisplay;
 extern Adafruit_GPS GPS;
 
-// uint32_t telemetryTimer;
-// uint32_t displayUpdateTimer;
-// // temporary for navigation debugging
-// uint32_t motorDemoTimer;
-// #define MOTOR_DEMO_INTERVAL 10000
-
 // global fn for checking free memory
 extern "C" int8_t *sbrk(int16_t i);
 
@@ -80,10 +74,6 @@ void setup() {
         debug("Interrupt started");
     else
         debug("***Interrupt failed***");
-    // telemetryTimer = millis();
-    // displayUpdateTimer = millis();
-    // // temporary for navigation debugging
-    // motorDemoTimer = millis() + 15000;
     // register cron jobs
     struct CronJob cronJob = {&sendTelemetry, TELEMETRY_INTERVAL, 0};
     registerCronJob(&cronJob);
@@ -105,23 +95,5 @@ void loop() {
         statusDisplay->setLidarOK(false);
     } else statusDisplay->setLidarOK(true);
     checkCronJobs();
-    // TODO: standardize something better for these things that
-    // are polling to happen at certain intervals; there will
-    // probably be more of them
-    // if (millis() - telemetryTimer > TELEMETRY_INTERVAL) {
-    //     telemetryTimer = millis();
-    //     sendTelemetry();
-    // }
-    // if (millis() - displayUpdateTimer > DISPLAY_UPDATE_INTERVAL) {
-    //     displayUpdateTimer = millis();
-    //     statusDisplay->setMagHeading(getMagneticHeading());
-    //     statusDisplay->updateDisplay();
-    // }
-    // // temporary code to exercise navigation
-    // // TODO: use a button press to enable / disable the motors
-    // if (millis() - motorDemoTimer > MOTOR_DEMO_INTERVAL) {
-    //     motorDemoTimer = millis();
-    //     navTurnInertial(-90);
-    // }
     loopTime = millis() - now;
 }
